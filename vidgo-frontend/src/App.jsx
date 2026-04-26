@@ -2,6 +2,11 @@ import { useState, useEffect } from 'react';
 import axios from 'axios';
 import './App.css'; 
 
+// 🌟 Render & Localhost Auto-Detection 🌟
+const API_BASE_URL = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
+  ? "http://localhost:5000"
+  : "https://vidgo-tmmz.onrender.com";
+
 function App() {
   const [url, setUrl] = useState('');
   const [quality, setQuality] = useState('1080'); // Default to Full HD
@@ -20,7 +25,8 @@ function App() {
       if (!url.includes('youtu')) return;
       setPhase('fetching');
       try {
-        const res = await axios.post('http://localhost:5000/api/info', { url });
+        // Dynamic URL used here
+        const res = await axios.post(`${API_BASE_URL}/api/info`, { url });
         if (res.data.status === 'success') {
           setVideoInfo(res.data);
         }
@@ -60,8 +66,8 @@ function App() {
     // Generate unique Task ID for SSE Stream
     const taskId = `task_${Date.now()}`;
     
-    // Start listening to real-time progress from backend
-    const eventSource = new EventSource(`http://localhost:5000/api/progress/${taskId}`);
+    // Start listening to real-time progress from backend (Dynamic URL)
+    const eventSource = new EventSource(`${API_BASE_URL}/api/progress/${taskId}`);
     
     eventSource.onmessage = (event) => {
       // Safely parsing Python dict string to JSON
@@ -78,16 +84,16 @@ function App() {
     };
 
     try {
-      // Send download request with taskId
-      const response = await axios.post('http://localhost:5000/api/download', { url, quality, format, task_id: taskId });
+      // Send download request with taskId (Dynamic URL)
+      const response = await axios.post(`${API_BASE_URL}/api/download`, { url, quality, format, task_id: taskId });
       
       eventSource.close();
       setProgress(100);
       setLiveMessage('✅ File Ready! Chrome mein bhej rahe hain...');
       
-      // Trigger Chrome Native Download directly
+      // Trigger Chrome Native Download directly (Dynamic URL)
       const fileName = encodeURIComponent(response.data.filename);
-      window.location.href = `http://localhost:5000/api/serve/${fileName}`;
+      window.location.href = `${API_BASE_URL}/api/serve/${fileName}`;
 
       setStatus('✅ Download Chrome mein start ho gaya hai!');
       
