@@ -20,6 +20,11 @@ IS_RENDER = os.environ.get('RENDER') is not None
 
 progress_tracker = {}
 
+# 🌟 0. HOME ROUTE (Taaki Render link kholne par 404 error na aaye) 🌟
+@app.route('/')
+def home():
+    return "Vidgo Pro Ultimate Backend is Live and Running! 🚀"
+
 # 🌟 1. Video Info Fetcher (Size Calculation ke sath) 🌟
 @app.route('/api/info', methods=['POST'])
 def get_info():
