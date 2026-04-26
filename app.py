@@ -20,23 +20,28 @@ IS_RENDER = os.environ.get('RENDER') is not None
 
 progress_tracker = {}
 
-# 🌟 0. FRONTEND ROUTE (Ab text ki jagah website khulegi) 🌟
+# 🌟 0. FRONTEND ROUTE 🌟
 @app.route('/')
 def serve():
-    # Ye React ki main HTML file ko serve karega
     return send_from_directory(app.static_folder, 'index.html')
 
 @app.route('/<path:path>')
 def static_proxy(path):
-    # Ye CSS, JS aur Images ko serve karega
     return send_from_directory(app.static_folder, path)
 
-# 🌟 1. Video Info Fetcher (Size Calculation ke sath) 🌟
+# 🌟 1. Video Info Fetcher (Size Calculation + ANTI-BOT BYPASS) 🌟
 @app.route('/api/info', methods=['POST'])
 def get_info():
     url = request.json.get('url')
     try:
-        with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
+        # 🚀 ANTI-BOT BYPASS: YouTube ko lagega Android Mobile se request aayi hai 🚀
+        info_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'extractor_args': {'youtube': ['player_client=android']} # Ye Render ka block bypass karega
+        }
+        
+        with yt_dlp.YoutubeDL(info_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             formats = info.get('formats', [])
             
@@ -85,7 +90,7 @@ def progress_stream(task_id):
             time.sleep(0.5)
     return Response(generate(), mimetype='text/event-stream')
 
-# 🌟 3. Main Downloader & Merger (HYBRID MAX SPEED ENGINE) 🌟
+# 🌟 3. Main Downloader & Merger (MAX SPEED ENGINE + ANTI-BOT BYPASS) 🌟
 @app.route('/api/download', methods=['POST'])
 def download_video():
     data = request.json
@@ -108,26 +113,25 @@ def download_video():
         elif d['status'] == 'finished':
             progress_tracker[task_id] = {"percent": 99, "status": "Merging Audio/Video (Please wait)..."}
 
-    # Base settings
+    # Base settings with ANTI-BOT BYPASS
     ydl_opts = {
         'outtmpl': f'{DOWNLOAD_FOLDER}/{unique_prefix}_%(title)s.%(ext)s',
         'progress_hooks': [progress_hook],
         'quiet': True,
         'no_warnings': True,
+        'extractor_args': {'youtube': ['player_client=android']} # 🚀 Bypass Block Here Too 🚀
     }
 
     # 🌟 MAX SPEED CONFIGURATION 🌟
     if IS_RENDER:
         print("☁️ [Render Mode] Pushing Free Tier to MAX Safe Limit...")
-        # Highest safe limit for 512MB RAM -> 4 concurrent chunks aur 10MB chunk size
         ydl_opts['concurrent_fragment_downloads'] = 4 
-        ydl_opts['http_chunk_size'] = 10485760 # 10MB chunks (Prevents RAM overflow while downloading fast)
+        ydl_opts['http_chunk_size'] = 10485760 
         postprocessor_args = ['-threads', '2', '-max_muxing_queue_size', '2048'] 
     else:
         print("💻 [Local Mode] Applying ULTIMATE Power Settings...")
-        # Local PC par aag lagane ke liye 8 parallel downloads
         ydl_opts['concurrent_fragment_downloads'] = 8
-        postprocessor_args = ['-threads', '0'] # 0 means use ALL available CPU cores
+        postprocessor_args = ['-threads', '0'] 
 
     if format_type == 'mp3':
         ydl_opts.update({
