@@ -7,7 +7,6 @@ from flask import Flask, request, jsonify, send_file, Response, send_from_direct
 from flask_cors import CORS
 import yt_dlp
 
-# 🌟 Flask ko batana ki React files 'dist' folder mein hain 🌟
 app = Flask(__name__, static_folder='dist', static_url_path='/')
 CORS(app)
 
@@ -15,12 +14,18 @@ DOWNLOAD_FOLDER = 'downloads'
 if not os.path.exists(DOWNLOAD_FOLDER):
     os.makedirs(DOWNLOAD_FOLDER)
 
-# 🌟 AUTO-DETECT ENVIRONMENT 🌟
 IS_RENDER = os.environ.get('RENDER') is not None
-
 progress_tracker = {}
 
-# 🌟 0. FRONTEND ROUTE 🌟
+# 🌟 LINK CLEANER FUNCTION 🌟
+def clean_url(url):
+    if not url: return ""
+    if '?si=' in url:
+        return url.split('?si=')[0]
+    elif '&si=' in url:
+        return url.split('&si=')[0]
+    return url
+
 @app.route('/')
 def serve():
     return send_from_directory(app.static_folder, 'index.html')
@@ -29,16 +34,18 @@ def serve():
 def static_proxy(path):
     return send_from_directory(app.static_folder, path)
 
-# 🌟 1. Video Info Fetcher (Size Calculation + ANTI-BOT BYPASS) 🌟
+# 🌟 1. Video Info Fetcher (Link Cleaner + Strong Bypass) 🌟
 @app.route('/api/info', methods=['POST'])
 def get_info():
-    url = request.json.get('url')
+    raw_url = request.json.get('url', '')
+    url = clean_url(raw_url) # Link saaf kar diya
+    
     try:
-        # 🚀 ANTI-BOT BYPASS: YouTube ko lagega Android Mobile se request aayi hai 🚀
+        # Stronger Bypass (Android + Web)
         info_opts = {
             'quiet': True,
             'no_warnings': True,
-            'extractor_args': {'youtube': ['player_client=android']} # Ye Render ka block bypass karega
+            'extractor_args': {'youtube': ['player_client=android,web']} 
         }
         
         with yt_dlp.YoutubeDL(info_opts) as ydl:
@@ -76,6 +83,7 @@ def get_info():
                 "status": "success"
             })
     except Exception as e:
+        print(f"❌ INFO API ERROR: {str(e)}") # Ab Render Logs mein error dikhega
         return jsonify({"status": "error", "message": str(e)}), 400
 
 # 🌟 2. Real-time Progress Stream 🌟
@@ -90,11 +98,12 @@ def progress_stream(task_id):
             time.sleep(0.5)
     return Response(generate(), mimetype='text/event-stream')
 
-# 🌟 3. Main Downloader & Merger (MAX SPEED ENGINE + ANTI-BOT BYPASS) 🌟
+# 🌟 3. Main Downloader & Merger 🌟
 @app.route('/api/download', methods=['POST'])
 def download_video():
     data = request.json
-    url = data.get('url')
+    raw_url = data.get('url', '')
+    url = clean_url(raw_url) # Download ke time bhi link saaf kiya
     quality = data.get('quality', '1080')
     format_type = data.get('format', 'mp4')
     task_id = data.get('task_id') 
@@ -113,23 +122,19 @@ def download_video():
         elif d['status'] == 'finished':
             progress_tracker[task_id] = {"percent": 99, "status": "Merging Audio/Video (Please wait)..."}
 
-    # Base settings with ANTI-BOT BYPASS
     ydl_opts = {
         'outtmpl': f'{DOWNLOAD_FOLDER}/{unique_prefix}_%(title)s.%(ext)s',
         'progress_hooks': [progress_hook],
         'quiet': True,
         'no_warnings': True,
-        'extractor_args': {'youtube': ['player_client=android']} # 🚀 Bypass Block Here Too 🚀
+        'extractor_args': {'youtube': ['player_client=android,web']}
     }
 
-    # 🌟 MAX SPEED CONFIGURATION 🌟
     if IS_RENDER:
-        print("☁️ [Render Mode] Pushing Free Tier to MAX Safe Limit...")
         ydl_opts['concurrent_fragment_downloads'] = 4 
         ydl_opts['http_chunk_size'] = 10485760 
         postprocessor_args = ['-threads', '2', '-max_muxing_queue_size', '2048'] 
     else:
-        print("💻 [Local Mode] Applying ULTIMATE Power Settings...")
         ydl_opts['concurrent_fragment_downloads'] = 8
         postprocessor_args = ['-threads', '0'] 
 
@@ -161,15 +166,13 @@ def download_video():
         
     except Exception as e:
         progress_tracker[task_id] = {"percent": 0, "status": "Error"}
-        print(f"❌ Error: {str(e)}")
+        print(f"❌ DOWNLOAD API ERROR: {str(e)}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
-# 🌟 4. Chrome Download Trigger 🌟
 @app.route('/api/serve/<path:filename>', methods=['GET'])
 def serve_file(filename):
     return send_file(os.path.join(DOWNLOAD_FOLDER, filename), as_attachment=True)
 
-# 🌟 5. Auto Cleanup Route 🌟
 @app.route('/api/cleanup', methods=['GET'])
 def cleanup():
     now = time.time()
@@ -180,11 +183,5 @@ def cleanup():
     return jsonify({"status": "cleaned"})
 
 if __name__ == '__main__':
-    print("\n" + "🔥"*15)
-    if IS_RENDER:
-        print(" VIDGO PRO: CLOUD ENGINE IS ONLINE (RENDER MAX-SPEED MODE) ")
-    else:
-        print(" VIDGO PRO: ULTIMATE ENGINE IS ONLINE (LOCAL MAX-POWER MODE) ")
-    print("🔥"*15 + "\n")
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port, threaded=True)
