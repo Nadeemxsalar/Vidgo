@@ -3,11 +3,12 @@ import glob
 import uuid
 import time
 import re
-from flask import Flask, request, jsonify, send_file, Response
+from flask import Flask, request, jsonify, send_file, Response, send_from_directory
 from flask_cors import CORS
 import yt_dlp
 
-app = Flask(__name__)
+# 🌟 Flask ko batana ki React files 'dist' folder mein hain 🌟
+app = Flask(__name__, static_folder='dist', static_url_path='/')
 CORS(app)
 
 DOWNLOAD_FOLDER = 'downloads'
@@ -15,15 +16,20 @@ if not os.path.exists(DOWNLOAD_FOLDER):
     os.makedirs(DOWNLOAD_FOLDER)
 
 # 🌟 AUTO-DETECT ENVIRONMENT 🌟
-# Check agar app Render par chal raha hai ya Localhost par
 IS_RENDER = os.environ.get('RENDER') is not None
 
 progress_tracker = {}
 
-# 🌟 0. HOME ROUTE (Taaki Render link kholne par 404 error na aaye) 🌟
+# 🌟 0. FRONTEND ROUTE (Ab text ki jagah website khulegi) 🌟
 @app.route('/')
-def home():
-    return "Vidgo Pro Ultimate Backend is Live and Running! 🚀"
+def serve():
+    # Ye React ki main HTML file ko serve karega
+    return send_from_directory(app.static_folder, 'index.html')
+
+@app.route('/<path:path>')
+def static_proxy(path):
+    # Ye CSS, JS aur Images ko serve karega
+    return send_from_directory(app.static_folder, path)
 
 # 🌟 1. Video Info Fetcher (Size Calculation ke sath) 🌟
 @app.route('/api/info', methods=['POST'])
