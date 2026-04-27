@@ -3,6 +3,7 @@ import glob
 import uuid
 import time
 import re
+import json
 from flask import Flask, request, jsonify, send_file, Response, send_from_directory
 from flask_cors import CORS
 import yt_dlp
@@ -26,6 +27,21 @@ def clean_url(url):
         return url.split('&si=')[0]
     return url
 
+# 🌟 MASTER BYPASS SETTINGS (Local & Render Dono Ke Liye) 🌟
+def get_bypass_opts():
+    return {
+        'quiet': True,
+        'no_warnings': True,
+        'nocheckcertificate': True,
+        'geo_bypass': True,
+        # 'tv' aur 'android' clients bot detection ko bypass karne mein best hain
+        'extractor_args': {'youtube': ['player_client=tv,android']},
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+        }
+    }
+
 @app.route('/')
 def serve():
     return send_from_directory(app.static_folder, 'index.html')
@@ -34,19 +50,14 @@ def serve():
 def static_proxy(path):
     return send_from_directory(app.static_folder, path)
 
-# 🌟 1. Video Info Fetcher (Link Cleaner + Strong Bypass) 🌟
+# 🌟 1. Video Info Fetcher 🌟
 @app.route('/api/info', methods=['POST'])
 def get_info():
     raw_url = request.json.get('url', '')
-    url = clean_url(raw_url) # Link saaf kar diya
+    url = clean_url(raw_url)
     
     try:
-        # Stronger Bypass (Android + Web)
-        info_opts = {
-            'quiet': True,
-            'no_warnings': True,
-            'extractor_args': {'youtube': ['player_client=android,web']} 
-        }
+        info_opts = get_bypass_opts()
         
         with yt_dlp.YoutubeDL(info_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -83,16 +94,17 @@ def get_info():
                 "status": "success"
             })
     except Exception as e:
-        print(f"❌ INFO API ERROR: {str(e)}") # Ab Render Logs mein error dikhega
+        print(f"❌ INFO API ERROR: {str(e)}")
         return jsonify({"status": "error", "message": str(e)}), 400
 
-# 🌟 2. Real-time Progress Stream 🌟
+# 🌟 2. Real-time Progress Stream (Fixed JSON Format) 🌟
 @app.route('/api/progress/<task_id>')
 def progress_stream(task_id):
     def generate():
         while True:
             data = progress_tracker.get(task_id, {"percent": 0, "status": "Starting..."})
-            yield f"data: {data}\n\n"
+            # JSON format mein bhej rahe hain taaki Frontend aaram se read kare
+            yield f"data: {json.dumps(data)}\n\n"
             if data.get("percent") >= 100 or data.get("status") == "Error":
                 break
             time.sleep(0.5)
@@ -103,7 +115,7 @@ def progress_stream(task_id):
 def download_video():
     data = request.json
     raw_url = data.get('url', '')
-    url = clean_url(raw_url) # Download ke time bhi link saaf kiya
+    url = clean_url(raw_url)
     quality = data.get('quality', '1080')
     format_type = data.get('format', 'mp4')
     task_id = data.get('task_id') 
@@ -122,13 +134,11 @@ def download_video():
         elif d['status'] == 'finished':
             progress_tracker[task_id] = {"percent": 99, "status": "Merging Audio/Video (Please wait)..."}
 
-    ydl_opts = {
+    ydl_opts = get_bypass_opts()
+    ydl_opts.update({
         'outtmpl': f'{DOWNLOAD_FOLDER}/{unique_prefix}_%(title)s.%(ext)s',
         'progress_hooks': [progress_hook],
-        'quiet': True,
-        'no_warnings': True,
-        'extractor_args': {'youtube': ['player_client=android,web']}
-    }
+    })
 
     if IS_RENDER:
         ydl_opts['concurrent_fragment_downloads'] = 4 

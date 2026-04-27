@@ -70,17 +70,18 @@ function App() {
     const eventSource = new EventSource(`${API_BASE_URL}/api/progress/${taskId}`);
     
     eventSource.onmessage = (event) => {
-      // Safely parsing Python dict string to JSON
-      const rawData = event.data.replace(/'/g, '"'); 
       try {
-          const data = JSON.parse(rawData);
+          // Ab replace() ki zaroorat nahi, backend proper JSON bhej raha hai
+          const data = JSON.parse(event.data);
           setProgress(Math.round(data.percent));
           setLiveMessage(data.status);
           
           if (data.percent >= 100 || data.status === "Error") {
               eventSource.close();
           }
-      } catch(e) {}
+      } catch(error) {
+          console.error("Progress parsing error:", error);
+      }
     };
 
     try {
