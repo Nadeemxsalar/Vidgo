@@ -27,19 +27,25 @@ def clean_url(url):
         return url.split('&si=')[0]
     return url
 
-# 🌟 MASTER BYPASS SETTINGS (Local & Render Dono Ke Liye) 🌟
+# 🌟 ULTIMATE BYPASS SETTINGS (Render Anti-Bot Bypass) 🌟
 def get_bypass_opts():
     return {
         'quiet': True,
         'no_warnings': True,
         'nocheckcertificate': True,
-        'geo_bypass': True,
-        # 'tv' aur 'android' clients bot detection ko bypass karne mein best hain
-        'extractor_args': {'youtube': ['player_client=tv,android']},
+        # 'geo_bypass' ko hata diya hai kyuki Render par ye YouTube ko alert kar deta hai
+        
+        # ios aur mweb (Mobile Web) sabse zyada safe hain bot detection bypass ke liye
+        'extractor_args': {'youtube': ['player_client=ios,mweb,android']},
+        
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            # Ekdum real iPhone ka User-Agent taaki Render ka IP mobile jaisa lage
+            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.9',
-        }
+            'Sec-Fetch-Mode': 'navigate',
+        },
+        'sleep_interval_requests': 1, # YouTube ko lage ki insaan click kar raha hai (1 sec delay)
     }
 
 @app.route('/')
@@ -103,7 +109,6 @@ def progress_stream(task_id):
     def generate():
         while True:
             data = progress_tracker.get(task_id, {"percent": 0, "status": "Starting..."})
-            # JSON format mein bhej rahe hain taaki Frontend aaram se read kare
             yield f"data: {json.dumps(data)}\n\n"
             if data.get("percent") >= 100 or data.get("status") == "Error":
                 break
@@ -140,11 +145,14 @@ def download_video():
         'progress_hooks': [progress_hook],
     })
 
+    # 🌟 MAX SPEED SETTINGS 🌟
     if IS_RENDER:
+        # Render Free Tier RAM limit bypass with maximum safe speed
         ydl_opts['concurrent_fragment_downloads'] = 4 
         ydl_opts['http_chunk_size'] = 10485760 
         postprocessor_args = ['-threads', '2', '-max_muxing_queue_size', '2048'] 
     else:
+        # Localhost Ultimate Speed
         ydl_opts['concurrent_fragment_downloads'] = 8
         postprocessor_args = ['-threads', '0'] 
 
