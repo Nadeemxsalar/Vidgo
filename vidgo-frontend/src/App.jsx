@@ -1,254 +1,356 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
-import './App.css'; 
+import './App.css';
 
-// 🌟 Render & Localhost Auto-Detection 🌟
-const API_BASE_URL = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
-  ? "http://localhost:5000"
-  : "https://vidgo-tmmz.onrender.com";
+const API = ['localhost', '127.0.0.1'].includes(window.location.hostname)
+  ? 'http://localhost:5000'
+  : 'https://vidgo-tmmz.onrender.com';
 
-function App() {
+const RES = [['2160', '4K (2160p)'], ['1440', '2K (1440p)'], ['1080', 'Full HD (1080p)'], ['720', 'HD (720p)'], ['480', '480p'], ['360', '360p'], ['144', '144p']];
+const FORMATS = [['mp4', 'Video MP4'], ['mp3', 'Audio MP3'], ['m4a', 'Audio M4A']];
+const LIMITS = [['0', 'No limit'], ['10', '10 MB/s'], ['5', '5 MB/s'], ['2', '2 MB/s'], ['1', '1 MB/s']];
+const YT = /(youtu\.be\/|youtube\.com\/)/;
+const IDLE = { percent: 0, status: '', speed: '', eta: '', label: '' };
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const load = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } };
+const SAVED = load('vidgo_prefs', {});
+const toSec = (s) => {
+  if (!s) return null;
+  const p = s.trim().split(':').map(Number);
+  return p.some(isNaN) || p.length > 3 ? null : p.reduce((a, b) => a * 60 + b, 0);
+};
+const niceDate = (s) => s ? new Date(+s.slice(0, 4), +s.slice(4, 6) - 1, +s.slice(6)).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
+const views = (n) => n ? new Intl.NumberFormat('en', { notation: 'compact' }).format(n) + ' views' : '';
+const langName = (c) => { try { return new Intl.DisplayNames(['en'], { type: 'language' }).of(c) || c; } catch { return c; } };
+
+const chime = () => {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.connect(g); g.connect(ctx.destination);
+    o.frequency.setValueAtTime(660, ctx.currentTime);
+    o.frequency.exponentialRampToValueAtTime(990, ctx.currentTime + 0.18);
+    g.gain.setValueAtTime(0.12, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.7);
+    o.start(); o.stop(ctx.currentTime + 0.7);
+  } catch { /* audio not allowed */ }
+};
+
+export default function App() {
   const [url, setUrl] = useState('');
-  const [quality, setQuality] = useState('1080'); // Default to Full HD
-  const [format, setFormat] = useState('mp4');
-  const [status, setStatus] = useState('');
-  const [history, setHistory] = useState([]);
-  
-  const [videoInfo, setVideoInfo] = useState(null);
-  const [phase, setPhase] = useState('idle'); // idle, fetching, processing
-  const [progress, setProgress] = useState(0);
-  const [liveMessage, setLiveMessage] = useState('');
+  const [links, setLinks] = useState('');
+  const [batch, setBatch] = useState(false);
+  const [format, setFormat] = useState(SAVED.format || 'mp4');
+  const [quality, setQuality] = useState('1080');
+  const [abr, setAbr] = useState(SAVED.abr || '192');
+  const [limit, setLimit] = useState(SAVED.limit || '0');
+  const [cover, setCover] = useState(SAVED.cover ?? true);
+  const [notify, setNotify] = useState(SAVED.notify ?? false);
+  const [sub, setSub] = useState('');
+  const [clip, setClip] = useState(false);
+  const [start, setStart] = useState('');
+  const [end, setEnd] = useState('');
+  const [info, setInfo] = useState(null);
+  const [phase, setPhase] = useState('idle'); // idle | fetching | processing
+  const [prog, setProg] = useState(IDLE);
+  const [msg, setMsg] = useState(null);
+  const [history, setHistory] = useState(() => load('vidgo_history', []));
+  const [theme, setTheme] = useState(() => load('vidgo_theme', window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
+  const job = useRef({});
+  const stop = useRef(false);
+  const busy = phase === 'processing';
 
-  // 1. Smart API Fetcher (Thumbnail, Title & Size)
   useEffect(() => {
-    const fetchInfo = async () => {
-      if (!url.includes('youtu')) return;
-      setPhase('fetching');
-      try {
-        // Dynamic URL used here
-        const res = await axios.post(`${API_BASE_URL}/api/info`, { url });
-        if (res.data.status === 'success') {
-          setVideoInfo(res.data);
-        }
-      } catch (err) {
-        console.log("Info error", err);
-      }
-      setPhase('idle');
-    };
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem('vidgo_theme', JSON.stringify(theme));
+  }, [theme]);
+  useEffect(() => { localStorage.setItem('vidgo_history', JSON.stringify(history)); }, [history]);
+  useEffect(() => {
+    localStorage.setItem('vidgo_prefs', JSON.stringify({ format, abr, limit, cover, notify }));
+  }, [format, abr, limit, cover, notify]);
 
-    const timer = setTimeout(() => {
-      if (url) fetchInfo();
-    }, 800);
-    return () => clearTimeout(timer);
+  // Load title, thumbnail, sizes and subtitles once the link settles
+  useEffect(() => {
+    setInfo(null);
+    setSub('');
+    if (!YT.test(url)) { setPhase((p) => (p === 'fetching' ? 'idle' : p)); return; }
+    let dead = false;
+    setPhase('fetching');
+    setMsg(null);
+    const t = setTimeout(async () => {
+      try {
+        const { data } = await axios.post(`${API}/api/info`, { url });
+        if (dead) return;
+        setInfo(data);
+        const ok = data.heights.filter((h) => h <= 1080);
+        setQuality(String(ok.length ? Math.max(...ok) : Math.max(...data.heights, 144)));
+      } catch (e) {
+        if (!dead) setMsg({ type: 'error', text: e.response?.data?.message || 'Cannot reach the server. Is app.py running?' });
+      } finally {
+        if (!dead) setPhase('idle');
+      }
+    }, 700);
+    return () => { dead = true; clearTimeout(t); };
   }, [url]);
 
-  const handlePaste = async () => {
+  const paste = async () => {
     try {
-      const text = await navigator.clipboard.readText();
-      setUrl(text);
-    } catch (err) {
-      alert("Clipboard access required!");
-    }
+      const t = await navigator.clipboard.readText();
+      batch ? setLinks((l) => (l ? l + '\n' : '') + t) : setUrl(t);
+    } catch { setMsg({ type: 'error', text: 'Allow clipboard access, or paste the link manually.' }); }
   };
 
-  // 2. The Advanced Download Flow (Real-Time SSE)
-  const handleDownload = async () => {
-    if (!url) {
-      setStatus('⚠️ Kripya valid YouTube URL enter karein!');
-      return;
+  const toggleNotify = async (on) => {
+    setNotify(on);
+    if (on && 'Notification' in window && Notification.permission === 'default') await Notification.requestPermission();
+  };
+
+  const runJob = async (link, label, extra) => {
+    const taskId = `t${Date.now()}${Math.random().toString(36).slice(2, 6)}`;
+    const ac = new AbortController();
+    const es = new EventSource(`${API}/api/progress/${taskId}`);
+    job.current = { taskId, es, ac };
+    es.onmessage = (ev) => { try { setProg({ ...JSON.parse(ev.data), label }); } catch { /* ignore */ } };
+    try {
+      const { data } = await axios.post(
+        `${API}/api/download`,
+        { url: link, format, quality, abr, limit, cover, sub, task_id: taskId, ...extra },
+        { signal: ac.signal }
+      );
+      setProg({ ...IDLE, percent: 100, status: 'Ready, handing over to Chrome', label });
+      // Server sends Content-Disposition: attachment, so Chrome saves it straight to Downloads
+      const a = document.createElement('a');
+      a.href = `${API}/api/file/${taskId}`;
+      a.download = '';
+      document.body.appendChild(a); a.click(); a.remove();
+      return data;
+    } finally { es.close(); }
+  };
+
+  const download = async () => {
+    const list = batch
+      ? [...new Set(links.split(/\s+/).filter((u) => YT.test(u)))]
+      : YT.test(url) ? [url] : [];
+    if (!list.length) return setMsg({ type: 'error', text: batch ? 'Paste at least one YouTube link.' : 'Paste a valid YouTube link first.' });
+    const useClip = clip && !batch;
+    const s = toSec(start), e = toSec(end);
+    if (useClip && (s === null || e === null || e <= s)) {
+      return setMsg({ type: 'error', text: 'Enter a valid clip range, for example 0:30 to 1:15.' });
     }
 
+    stop.current = false;
     setPhase('processing');
-    setProgress(0);
-    setStatus('');
-    setLiveMessage('📡 Server se connect ho raha hai...');
-    
-    // Generate unique Task ID for SSE Stream
-    const taskId = `task_${Date.now()}`;
-    
-    // Start listening to real-time progress from backend (Dynamic URL)
-    const eventSource = new EventSource(`${API_BASE_URL}/api/progress/${taskId}`);
-    
-    eventSource.onmessage = (event) => {
+    setMsg(null);
+    let ok = 0, lastErr = '';
+    for (let i = 0; i < list.length && !stop.current; i++) {
+      const label = list.length > 1 ? `Video ${i + 1} of ${list.length}` : '';
+      setProg({ ...IDLE, status: 'Connecting...', label });
       try {
-          // Ab replace() ki zaroorat nahi, backend proper JSON bhej raha hai
-          const data = JSON.parse(event.data);
-          setProgress(Math.round(data.percent));
-          setLiveMessage(data.status);
-          
-          if (data.percent >= 100 || data.status === "Error") {
-              eventSource.close();
-          }
-      } catch(error) {
-          console.error("Progress parsing error:", error);
+        const data = await runJob(list[i], label, useClip ? { start: s, end: e } : {});
+        ok++;
+        setHistory((h) => [{
+          id: Date.now() + i, url: list[i], title: list.length > 1 ? list[i] : info?.title || list[i],
+          thumb: list.length > 1 ? null : info?.thumbnail,
+          type: format === 'mp4' ? `${quality}p video` : format === 'mp3' ? `MP3 ${abr}k` : 'M4A', size: data.size,
+        }, ...h].slice(0, 8));
+        if (i < list.length - 1) await sleep(1200);
+      } catch (err) {
+        if (axios.isCancel(err)) break;
+        lastErr = err.response?.data?.message || 'Server is not reachable.';
+        if (list.length === 1) break;
       }
-    };
-
-    try {
-      // Send download request with taskId (Dynamic URL)
-      const response = await axios.post(`${API_BASE_URL}/api/download`, { url, quality, format, task_id: taskId });
-      
-      eventSource.close();
-      setProgress(100);
-      setLiveMessage('✅ File Ready! Chrome mein bhej rahe hain...');
-      
-      // Trigger Chrome Native Download directly (Dynamic URL)
-      const fileName = encodeURIComponent(response.data.filename);
-      window.location.href = `${API_BASE_URL}/api/serve/${fileName}`;
-
-      setStatus('✅ Download Chrome mein start ho gaya hai!');
-      
-      // Add to Session History
-      const newItem = {
-        id: Date.now(),
-        title: videoInfo ? videoInfo.title : url.substring(0, 30) + '...',
-        type: format === 'mp4' ? `${quality}p Video` : 'Audio (MP3)'
-      };
-      setHistory([newItem, ...history].slice(0, 4));
-
-      setTimeout(() => {
-        setPhase('idle');
-        setProgress(0);
-        setLiveMessage('');
-      }, 3500);
-      
-    } catch (error) {
-      eventSource.close();
-      setPhase('idle');
-      setProgress(0);
-      setLiveMessage('');
-      setStatus('❌ Server error: Python terminal check karein.');
     }
+
+    if (stop.current) setMsg({ type: 'info', text: 'Download cancelled.' });
+    else if (ok === list.length) {
+      setMsg({ type: 'ok', text: `${ok > 1 ? `${ok} downloads` : 'Download'} started in Chrome. Press Ctrl+J to see them.` });
+      if (notify) {
+        chime();
+        if ('Notification' in window && Notification.permission === 'granted') new Notification('Vidgo', { body: 'Your download is ready.' });
+      }
+    } else setMsg({ type: ok ? 'info' : 'error', text: ok ? `${ok} of ${list.length} finished. Last error: ${lastErr}` : lastErr });
+    setTimeout(() => { setPhase('idle'); setProg(IDLE); }, ok ? 1500 : 0);
   };
 
-  // Professional SVG Icons Collection
-  const Icons = {
-    Link: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="icon"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>,
-    Video: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="icon"><rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"></rect><line x1="7" y1="2" x2="7" y2="22"></line><line x1="17" y1="2" x2="17" y2="22"></line><line x1="2" y1="12" x2="22" y2="12"></line><line x1="2" y1="7" x2="7" y2="7"></line><line x1="2" y1="17" x2="7" y2="17"></line><line x1="17" y1="17" x2="22" y2="17"></line><line x1="17" y1="7" x2="22" y2="7"></line></svg>,
-    Audio: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="icon"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>,
-    Settings: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="icon"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>,
-    Download: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="icon-btn"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+  const cancel = () => {
+    stop.current = true;
+    const { taskId, es, ac } = job.current;
+    axios.post(`${API}/api/cancel`, { task_id: taskId }).catch(() => {});
+    ac?.abort();
+    es?.close();
   };
 
-  const getStatusClass = () => {
-    if (status.includes('✅')) return 'status-success';
-    if (status.includes('❌') || status.includes('⚠️')) return 'status-error';
-    return '';
-  };
+  const resList = (() => {
+    const f = info?.heights?.length ? RES.filter(([v]) => info.heights.includes(+v)) : [];
+    return f.length ? f : RES;
+  })();
+  const est = batch ? null : !info ? null
+    : format === 'mp4' ? info.sizes[quality]
+    : format === 'mp3' ? +(info.seconds * abr / 8 / 1024).toFixed(1)
+    : info.audio_size;
+  const pct = Math.round(prog.percent || 0);
+  const count = batch ? new Set(links.split(/\s+/).filter((u) => YT.test(u))).size : 0;
 
   return (
-    <div className="glass-card">
-      <div className="header">
-        <h1 className="header-title">VIDGO PRO</h1>
-        <p className="header-subtitle">Ultimate Creator Engine</p>
-      </div>
+    <>
+      <div className="aurora" aria-hidden="true"><i /><i /><i /></div>
+      <main className="shell">
+        <header className="top">
+          <div className="brand"><span className={`reel${busy ? ' spin' : ''}`} aria-hidden="true" /><h1>Vidgo</h1></div>
+          <button className="ghost glass" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} aria-label="Switch theme">
+            {theme === 'dark' ? 'Light mode' : 'Dark mode'}
+          </button>
+        </header>
+        <p className="lead">Paste a YouTube link, pick a quality, and the file goes straight to your Chrome downloads.</p>
 
-      <div className="form-container">
-        
-        {/* Media Link Section */}
-        <div className="input-group">
-          <label className="input-label">Media Link</label>
-          <div className="input-row">
-            <div className="input-wrapper">
-              {Icons.Link}
-              <input 
-                type="text" 
-                placeholder="Paste YouTube link here..."
-                className="custom-input with-icon"
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-                disabled={phase === 'processing'}
-              />
+        <section className={`panel glass${busy ? ' busy' : ''}`}>
+          <div className="field">
+            <div className="label-row">
+              <span>{batch ? 'Video links' : 'Video link'}</span>
+              <label className="toggle">
+                <input type="checkbox" className="switch" checked={batch} disabled={busy} onChange={(e) => setBatch(e.target.checked)} />
+                Batch mode
+              </label>
             </div>
-            {url ? (
-              <button className="action-btn clear-btn" onClick={() => {setUrl(''); setVideoInfo(null); setStatus('');}} disabled={phase === 'processing'}>Clear</button>
+            {batch ? (
+              <div className="row top-align">
+                <textarea rows={4} placeholder={'One link per line\nhttps://youtu.be/...'} value={links} disabled={busy}
+                  aria-label="Video links" onChange={(e) => setLinks(e.target.value)} />
+                {links ? <button onClick={() => setLinks('')} disabled={busy}>Clear</button> : <button onClick={paste}>Paste</button>}
+              </div>
             ) : (
-              <button className="action-btn paste-btn" onClick={handlePaste}>Paste</button>
+              <div className="row">
+                <input type="url" inputMode="url" placeholder="https://youtu.be/..." value={url} disabled={busy} aria-label="Video link"
+                  onChange={(e) => setUrl(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && !busy && download()} />
+                {url ? <button onClick={() => { setUrl(''); setMsg(null); }} disabled={busy}>Clear</button> : <button onClick={paste}>Paste</button>}
+              </div>
             )}
           </div>
-        </div>
 
-        {/* Live Video Preview Box */}
-        {phase === 'fetching' && <div className="status-msg status-loading" style={{padding: '10px', marginTop: '0', marginBottom: '20px'}}>⏳ Generating Secure Preview...</div>}
-        {videoInfo && phase !== 'fetching' && (
-          <div className="preview-card">
-            <img src={videoInfo.thumbnail} alt="Thumbnail" className="preview-thumbnail" />
-            <div className="preview-info">
-              <span className="preview-badge">{videoInfo.duration} MINS</span>
-              <p className="preview-title" title={videoInfo.title}>{videoInfo.title}</p>
-            </div>
-          </div>
-        )}
+          {!batch && phase === 'fetching' && <div className="msg info" role="status">Loading video details...</div>}
 
-        {/* Configuration Row with Dynamic File Sizes */}
-        <div className="flex-row">
-          <div className="input-group">
-            <label className="input-label">Format</label>
-            <div className="input-wrapper">
-              {format === 'mp4' ? Icons.Video : Icons.Audio}
-              <select className="custom-input with-icon" value={format} onChange={(e) => setFormat(e.target.value)} disabled={phase === 'processing'}>
-                <option value="mp4">Video (MP4)</option>
-                <option value="mp3">Audio (MP3) {videoInfo?.audio_size ? `(~${videoInfo.audio_size} MB)` : ''}</option>
-              </select>
-            </div>
-          </div>
-          <div className="input-group">
-            <label className="input-label">Resolution</label>
-            <div className="input-wrapper">
-              {Icons.Settings}
-              <select className="custom-input with-icon" value={quality} onChange={(e) => setQuality(e.target.value)} disabled={format === 'mp3' || phase === 'processing'}>
-                <option value="2160">4K Ultra HD (2160p) {videoInfo?.sizes?.['2160'] ? `(~${videoInfo.sizes['2160']} MB)` : ''}</option>
-                <option value="1440">2K Quad HD (1440p) {videoInfo?.sizes?.['1440'] ? `(~${videoInfo.sizes['1440']} MB)` : ''}</option>
-                <option value="1080">Full HD (1080p) {videoInfo?.sizes?.['1080'] ? `(~${videoInfo.sizes['1080']} MB)` : ''}</option>
-                <option value="720">HD (720p) {videoInfo?.sizes?.['720'] ? `(~${videoInfo.sizes['720']} MB)` : ''}</option>
-                <option value="480">Standard (480p) {videoInfo?.sizes?.['480'] ? `(~${videoInfo.sizes['480']} MB)` : ''}</option>
-                <option value="360">Low (360p) {videoInfo?.sizes?.['360'] ? `(~${videoInfo.sizes['360']} MB)` : ''}</option>
-                <option value="144">Lowest (144p) {videoInfo?.sizes?.['144'] ? `(~${videoInfo.sizes['144']} MB)` : ''}</option>
-              </select>
-            </div>
-          </div>
-        </div>
-
-        {/* Dynamic Progress Indicator */}
-        {phase === 'processing' && (
-          <div className="progress-container">
-            <div className="progress-header">
-              <span className="progress-text">{liveMessage}</span>
-              <span className="progress-percent">{progress}%</span>
-            </div>
-            <div className="progress-track">
-              <div className="progress-fill" style={{ width: `${progress}%` }}></div>
-            </div>
-          </div>
-        )}
-
-        {/* Action Button */}
-        <button className="download-btn" onClick={handleDownload} disabled={phase === 'processing' || !url}>
-          {phase === 'processing' ? (
-            <><span className="spinner"></span> Processing...</>
-          ) : (
-            <>{Icons.Download} START DOWNLOAD</>
-          )}
-        </button>
-
-        {status && <div className={`status-msg ${getStatusClass()}`}>{status}</div>}
-
-        {/* History Tracker */}
-        {history.length > 0 && (
-          <div className="history-section">
-            <label className="input-label" style={{color: '#38bdf8'}}>Recent Activity Tracker</label>
-            {history.map((item) => (
-              <div key={item.id} className="history-item">
-                <span className="history-link" title={item.title}>{item.title}</span>
-                <span className="history-type">{item.type}</span>
+          {!batch && info && (
+            <div className="preview">
+              <div className="thumb"><img src={info.thumbnail} alt="" /><b>{info.duration}</b></div>
+              <div>
+                <p className="title" title={info.title}>{info.title}</p>
+                <p className="sub">{[info.channel, views(info.views), niceDate(info.date)].filter(Boolean).join(' | ')}</p>
+                <a className="link" href={info.thumbnail} target="_blank" rel="noreferrer">Open thumbnail</a>
               </div>
+            </div>
+          )}
+
+          <div className="seg" style={{ '--i': FORMATS.findIndex(([v]) => v === format) }} role="group" aria-label="Format">
+            {FORMATS.map(([v, l]) => (
+              <button key={v} className={format === v ? 'on' : ''} onClick={() => setFormat(v)} disabled={busy} aria-pressed={format === v}>{l}</button>
             ))}
           </div>
-        )}
 
-      </div>
-    </div>
+          <div className="grid2">
+            {format === 'mp4' ? (
+              <label className="field">Resolution
+                <select value={quality} onChange={(e) => setQuality(e.target.value)} disabled={busy}>
+                  {resList.map(([v, l]) => <option key={v} value={v}>{l}{!batch && info?.sizes?.[v] ? ` (~${info.sizes[v]} MB)` : ''}</option>)}
+                </select>
+              </label>
+            ) : (
+              <label className="field">Audio quality
+                <select value={abr} onChange={(e) => setAbr(e.target.value)} disabled={busy || format === 'm4a'}>
+                  {format === 'm4a' ? <option>Original (no re-encode)</option>
+                    : ['320', '192', '128'].map((b) => <option key={b} value={b}>{b} kbps</option>)}
+                </select>
+              </label>
+            )}
+            <div className="field">{batch ? 'Queue' : 'Estimated size'}
+              <div className="chip">{batch ? (count ? `${count} video${count > 1 ? 's' : ''}, one after another` : 'No links yet') : est ? `~${est} MB` : 'Paste a link to see'}</div>
+            </div>
+          </div>
+
+          <details className="more">
+            <summary>More options</summary>
+            <div className="more-body">
+              <label className="field">Speed limit
+                <select value={limit} onChange={(e) => setLimit(e.target.value)} disabled={busy}>
+                  {LIMITS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                </select>
+              </label>
+              {format === 'mp4' ? (
+                <label className="field">Subtitles (embedded in the video)
+                  <select value={sub} onChange={(e) => setSub(e.target.value)} disabled={busy || (!batch && !info?.subs?.length)}>
+                    <option value="">{!batch && info && !info.subs.length ? 'None available' : 'Off'}</option>
+                    {(batch ? ['en', 'hi'] : info?.subs || []).map((c) => <option key={c} value={c}>{langName(c)}</option>)}
+                  </select>
+                </label>
+              ) : (
+                <label className="toggle">
+                  <input type="checkbox" className="switch" checked={cover} onChange={(e) => setCover(e.target.checked)} disabled={busy} />
+                  Add cover art and song tags
+                </label>
+              )}
+              <label className="toggle">
+                <input type="checkbox" className="switch" checked={notify} onChange={(e) => toggleNotify(e.target.checked)} />
+                Play a sound and notify me when done
+              </label>
+              {!batch && (
+                <label className="toggle">
+                  <input type="checkbox" className="switch" checked={clip} onChange={(e) => setClip(e.target.checked)} disabled={busy} />
+                  Download only a part of the video
+                </label>
+              )}
+              {clip && !batch && (
+                <div className="grid2">
+                  <label className="field">Start
+                    <input placeholder="0:30" value={start} onChange={(e) => setStart(e.target.value)} disabled={busy} />
+                  </label>
+                  <label className="field">End {info && <span className="sub">(video is {info.duration})</span>}
+                    <input placeholder="1:15" value={end} onChange={(e) => setEnd(e.target.value)} disabled={busy} />
+                  </label>
+                </div>
+              )}
+            </div>
+          </details>
+
+          {busy && (
+            <div>
+              <div className="film" role="progressbar" aria-valuenow={pct} aria-valuemin="0" aria-valuemax="100">
+                <div className="film-fill" style={{ width: `${pct}%` }} />
+              </div>
+              <div className="meta">
+                <span>{[prog.label, prog.status].filter(Boolean).join(': ')}</span>
+                <span>{pct}%{prog.speed ? ` | ${prog.speed}` : ''}{prog.eta ? ` | ${prog.eta} left` : ''}</span>
+              </div>
+            </div>
+          )}
+
+          {busy
+            ? <button className="danger" onClick={cancel}>Cancel download</button>
+            : <button className="primary" onClick={download} disabled={batch ? !count : !url || phase === 'fetching'}>
+                {batch && count > 1 ? `Download ${count} videos` : 'Download'}
+              </button>}
+
+          {msg && <div className={`msg ${msg.type}`} role="status">{msg.text}</div>}
+        </section>
+
+        {history.length > 0 && (
+          <section className="hist glass">
+            <div className="hist-head">
+              <h2>Recent downloads</h2>
+              <button className="ghost" onClick={() => setHistory([])}>Clear list</button>
+            </div>
+            {history.map((h) => (
+              <div key={h.id} className="hitem">
+                {h.thumb ? <img src={h.thumb} alt="" /> : <span className="noimg" />}
+                <div className="hmeta">
+                  <p title={h.title}>{h.title}</p>
+                  <p className="sub">{h.type}{h.size ? ` | ${h.size} MB` : ''}</p>
+                </div>
+                <button className="ghost" onClick={() => { setBatch(false); setUrl(h.url); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>Use again</button>
+              </div>
+            ))}
+          </section>
+        )}
+      </main>
+    </>
   );
 }
-
-export default App;
